@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script type="text/javascript" src="js/paper.js"></script><!-- Load the Paper.js library -->
+<script type="text/javascript" src="js/rhill-voronoi-core.min.js"></script><!-- load voronoi js -->
+
+<!-- PaperScript and associate it with lilacCanvas -->
+<script type="text/paperscript" canvas="lilacCanvas">
+
+/*
+TODO:
+mouse interactions
+persistent
+*/
+
+
+var voronoiLayer = new Layer();
+var squeetLayer = new Layer();
+var squeets = [];
+var voronoi = new Voronoi();
+var voronoiSites = []; //this will store the points from
+
+/* colours */
+var streetcolor = '#f2f0c7'; //aka Beer Foam!
+
+var hitOptions = {
+	segments: true,
+	stroke: true,
+	fill: true,
+	tolerance: 5
+};
+
+var values = {
+	paths: 10,
+	minPoints: 3,
+	maxPoints: 6,
+	minRadius: 100,
+	maxRadius: 200
+};
+
+var maxLotDepth = 150; //this is complicated to make tzone specific, and not sure it's so strictly beneficial.
+function tzone(name, color){
+	this.name = name;
+	this.color = color;
+}
+var t3 = new tzone('T3', '#DCD9E6');
+var t4 = new tzone('T4', 'BFB5E7');
+
+/*
+T6 514A99
+T5 8779BF
+T4 BFB5E7
+T3 DCD9E6
+---
+T2 B7B787 (greens)
+T1 8B9564
+CS CED86A (light green too)
+CB 732227 (dark red)
+SD 71737F (grey)
+*/
+
+var bbox, diagram;
+var margin = 0;
+bbox = {
+	xl: margin,
+	xr: view.bounds.width - margin,
+	yt: margin,
+	yb: view.bounds.height - margin
+};
+
+var masks = [];
+var voronoiMask = [];	
+voronoiSites.length = 0; //clear the array
+
+
+createPaths(); //TODO change this to update the view only after input updates things (mouseup or mousedrag)
+
+updateView(); //call this at the end of onDrag and onMouseUp
+
+function updateView(){
+	squeets = merge(squeets); //turn any overlapping public spaces into a single public space. TODO: define resulting sides' tzones
+	updateVoronoi(); 
+	renderVoronoi();
+	console.log(squeets);
+}
+
+
+function createPaths() {
+	
+	var pathMask;
+	
+	//TODO: change this to loop through all squeets instead
+	for (var i = 0; i < values.paths; i++) {
+		squeetLayer.activate();
+		var path = createSqueet(view.size * Point.random());
+		squeets.push(path); // paths (squeets) are in a global array
+		
+		pathMask = path.clone();
+		pathMask.fillColor = null;
+		pathMask.strokeColor = null;
+		pathMask.scale( (path.bounds.width + maxLotDepth) / (path.bounds.width) );
+		masks.push(pathMask); // the area of private buildable land around each public space
+	};
+	//voronoiMask = masks;//voronoiMask = merge(masks);
+}
+
+function updateVoronoi() {
+	var numberOfSqueets = squeets.length;
+	for (var i = 0; i < numberOfSqueets; i++){
+		var path = squeets[i];
+		generateVoronoiSites(path.segments);
+	}
+}
+
+/***********************************************************/
+/** three functions that together merge overlapping paths **/
+/***********************************************************/
+function overlaps(path, other) {
+  return !(path.getIntersections(other).length == 0);
+};
+//I only barely understand this recursive function, but I believe it takes a path and an array of paths; if the path overlaps with
+// eturn an array of non-overlaping paths by doing path.unite(other) as necessary. others: an array of paths, maybe with some overlapping.
+function mergeOne(path, others) {
+	var i, merged, other, union, _i, _len, _ref;
+	for (i = _i = 0, _len = others.length; _i < _len; i = ++_i) {
+		other = others[i];
+		if (overlaps(path, other)) {
+			union = path.unite(other);
+			merged = mergeOne(union, others.slice(i + 1));
+			return (_ref = others.slice(0, i)).concat.apply(_ref, merged);
+		}
+	}
+	return others.concat(path);
+};
+// Return an array of paths that are non-overlapping and cover the union of paths.
+function merge(paths) {
+	
+	var path, result, _i, _len;
+	result = [];
+	for (_i = 0, _len = paths.length; _i < _len; _i++) {
+		path = paths[_i];
+		result = mergeOne(path, result);
+	}
+	return result;
+};
+
+
+function renderVoronoi() {
+	voronoiLayer.activate();
+	var voronoiCells = [];
+	var diagram = voronoi.compute(voronoiSites, bbox);
+	console.log(diagram);
+	if (diagram) {
+		var l = voronoiSites.length;
+		var i;
+		for (i = 0; i < l; i++) {
+			var cell = diagram.cells[voronoiSites[i].voronoiId];
+			if (cell) {
+				var halfedges = cell.halfedges,
+					length = halfedges.length;
+				if (length > 2) {
+					var points = [];
+					for (var j = 0; j < length; j++) {
+						v = halfedges[j].getEndpoint();
+						points.push(new Point(v));
+					}
+					//createVoronoiCell(points, voronoiSites[i]);
+					var cellPath = new Path(points);
+					cellPath.fillColor = 'red';
+					voronoiCells.push(cellPath);
+				}
+			}
+		}
+		
+		var cellsGroup = new Group(voronoiCells); //cells colours should be all that remains
+		var masksGroup = new Group(masks);
+		masksGroup.fillColor = 'blue'; //this colour is irrelvant
+		masksGroup.blendMode = 'destination-in'; //destination-in keeps the underlying (i.e. the voronoiCells)
+		
+	}
+}
+
+
+function generateVoronoiSites(corners) {
+	var numCorners = corners.length;
+	var cornerPoint1, cornerPoint2;
+	var site1, site2;
+	var vector = new Point();
+	var dot;
+	for (var i = 0; i < numCorners; i++) {
+		cornerPoint1 = corners[i].point;
+		cornerPoint2 = corners[i].next.point;
+		vector = cornerPoint2 - cornerPoint1;
+		vector.length -= 1;
+		site1 = cornerPoint1 + new Point(vector);
+		vector.length = 1;
+		site2 = cornerPoint1 + new Point(vector);
+		voronoiSites.push(site1, site2);
+		
+		/*
+		squeetLayer.activate();
+		dot = new Path.Circle(site1, 5);
+		dot.fillColor = 'green';
+		dot = new Path.Circle(site2, 5);
+		dot.fillColor = 'blue';
+		*/
+	}
+	return;
+}
+
+function createSqueet(center, maxRadius, points) {
+	var size = new Size(100, 100);
+	var path = new Path.Rectangle(center, size);
+	path.fillColor = streetcolor;
+	return path;
+}
+
+
+
+/*
+
+var hitSegment, hitPath;
+var movePath = false;
+
+function onMouseDown(event) {
+	hitSegment = hitPath = null;
+	var hitResult = project.hitTest(event.point, hitOptions);
+	if (!hitResult)
+		return;
+	if (!(hitResult.item.layer == squeetLayer))
+		return;
+
+	if (event.modifiers.shift) {
+		if (hitResult.type == 'segment') {
+			hitResult.segment.remove();
+		};
+		return;
+	}
+
+	if (hitResult) {
+		hitPath = hitResult.item;
+		if (hitResult.type == 'segment') {
+			hitSegment = hitResult.segment;
+		} else if (hitResult.type == 'stroke') {
+			var location = hitResult.location;
+			hitSegment = hitPath.insert(location.index + 1, event.point);
+		}
+	}
+
+	movePath = hitResult.type == 'fill';
+	if (movePath)
+		project.activeLayer.addChild(hitResult.item); //bring to front
+}
+
+function onMouseMove(event) {
+	project.activeLayer.selected = false;
+	if (event.item)
+		event.item.selected = true;
+}
+
+function onMouseDrag(event) {
+	if (hitSegment) {
+		hitSegment.point += event.delta;
+	} else if (hitPath) {
+		hitPath.position += event.delta;
+	}
+	//updateView();
+}
+
+function onMouseUp(event) {
+	updateView();
+}
+
+*/
+
+</script>
+</head>
+<body>
+	<canvas id="lilacCanvas" resize></canvas>
+</body>
+</html>
